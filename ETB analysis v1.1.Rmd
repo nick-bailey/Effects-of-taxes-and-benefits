@@ -1,0 +1,242 @@
+---
+title: "ONS's 'Effects of Taxes and Benefits' data"
+author: "Nick Bailey, Urban Big Data Centre"
+date: "23/06/2020"
+output:
+  html_document: default
+  word_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+pacman::p_load(lubridate, here, ggrepel, tidyverse, readxl)
+
+
+```
+
+## Introduction
+
+The UK's Office for National Statistics (ONS) produces an annual analysis titled 'The Effects of Taxes and Benefits on household incomes' or ETB for short. The ETB analysis is produced annually - see the latest bulletin here:  https://www.ons.gov.uk/peoplepopulationandcommunity/personalandhouseholdfinances/incomeandwealth/bulletins/theeffectsoftaxesandbenefitsonhouseholdincome/financialyearending2019. The data underlying the analysis come from the Living Costs and Food Survey (LCF), an annual cross-sectional survey with around 5000 households. 
+
+The ETB analysis is interesting for a whole host of reasons but, from a social policy perspective, it is great for illustrating how different parts of the tax and benefit system interact. You can see levels of inequality in original incomes (from employment, occupational pensions and other private sources), how these are affected by direct and indirect taxes and by cash transfers through welfare benefit payments. You can also see the impact of non-cash transfers or 'benefits in kind' which are often ignored in analyses of inequality. This is the value which households get from their access to public services which are either free at the point of use or provided at costs below market rates. 
+
+'Benefits in kind' covers: 
+
+* NHS and adult social care services; 
+* education (schooling), as well as school meals and Healthy Start Vouchers; 
+* some housing subsidies; and 
+* rail and bus travel subsidy. 
+
+From this year, and following a suggestion from the Urban Big Data Centre, the ONS has moved to providing the data for the tables in the ETB analysis in a tidy format. Previously, tables were made available in a format which was good for humans to read but very cumbersome for analysis. The new format is much more readily machine-readable, making it much easier to process quickly. 
+
+This blog document shows some simple analyses which can be performed as a result of this new output. The hope is that this will encourage others to make more use of these data. 
+
+
+```{r data import, echo=FALSE, warning=FALSE}
+
+etb <- read_excel("Data\\etbhistoricdeciles.xlsx",
+                 sheet = "Table 1") 
+
+# tidy names
+names(etb)<-str_replace_all(names(etb), c(" " = "." , "," = "" ))
+
+# renaming and tidying formats
+# - note that some Amounts missing (e.g. specific benefits)
+deciles <- c("bottom", "second", "third", "fourth", "fifth", "sixth",
+             "seventh", "eighth", "ninth", "top", "all")
+etb <- etb %>%
+  rename(Year = Financial.year.ending, 
+         Group = Household.group,
+         Decile = Decile.group,
+         Amount = "£.per.year") %>%
+  mutate(Amount = as.numeric(Amount),
+         Decile = factor(Decile, 
+                         levels = deciles),
+         Component = case_when(Component == "original income" ~ "Original income",
+                               Component == "direct benefits in cash" 
+                                   ~ "Direct benefits in cash",
+                               TRUE ~ Component)) 
+
+
+# measures in sub-Components
+incomes <- c("Total original income", "Gross income", "Disposable income", 
+            "Post-tax income", "Final income")
+incomes.equiv <- c("Equivalised original income", "Equivalised gross income", "Equivalised disposable income", 
+            "Equivalised post-tax income", "Equivalised final income")
+incomes.2 <- c("Original income", "Gross income", "Disposable income", 
+            "Post-tax income", "Final income")
+
+```
+
+## Stages in the redistribution of income
+
+From the ONS note, the five stages in the redistribution of income are:
+
+* "original income": private income sources, covering employment, private pensions, investments and other non-government sources;
+* "gross income": original income PLUS income from cash benefits;
+* "disposable income": gross income MINUS direct taxes; 
+* "post-tax income": disposable income MINUS taxes like VAT;  
+* "final income": post-tax income PLUS the value of benefits from services (benefits-in-kind).  
+
+For the financial year ending 2019, we can examine how these vary across the income deciles by recreating a chart in the ONS bulletin. We use the equivalised household incomes to remove the effect of differences in household size and composition (see ONS note for details). 
+
+```{r incomes by decile, echo=FALSE}
+
+etb %>%
+  filter(Sub.component %in% incomes.equiv & 
+           Group == "All" &
+           Decile != "all" &
+           Year == "2019") %>% 
+  mutate(Sub.component = factor(str_to_sentence(str_remove(Sub.component, "Equivalised ")),
+                                levels = incomes.2)) %>%
+  ggplot(aes(x = Sub.component, y = Amount, group = Decile)) + 
+  geom_bar(aes(fill = Decile), position = "dodge", stat = "identity") + 
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 12)) +
+  labs(
+    title = "Incomes for stages by decile - F/Y ending 2019 ",
+    subtitle = "Incomes equivalised for household size",
+    x = "\nIncome stage",
+    y = "Amount (£)", 
+    caption = paste0("\nNick Bailey, Urban Big Data Centre.",
+      " Data from ONS 'Effects of Taxes & Benefits' analysis")) 
+
+```
+
+
+
+## The value of cash benefits
+
+The previous figure shows the positive impact of cash benefits, particularly for lower income groups. Gross incomes are substantially higher than original incomes as a result. To look at these in more detail, we calculate the proportion of gross income which comes from cash benefits. We use gross income rather than final income as cash benefits are paid before taxes are deducted. The figure shows clearly how the value of cash benefits has been eroded in recent years. For the lowest income decile, they have gone from around 62% of gross income to 47%. There is a similar trend for the next poorest as well.  
+
+```{r cash benefits by decile, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+etb %>%
+  filter((Sub.component == "Gross income" | 
+            Sub.component == "Total cash benefits") & 
+           Group == "All" &
+           Decile != "all") %>%
+  select(-c(Component, Group)) %>%
+  mutate(Sub.component = str_replace_all(Sub.component, c(" " = "."))) %>%
+  pivot_wider(names_from = Sub.component, values_from = Amount) %>%
+  mutate(Cash.Benefits.pct = 100 * Total.cash.benefits/Gross.income) %>%
+  ggplot(aes(x = Year, y = Cash.Benefits.pct, group = Decile)) + 
+  geom_line(aes(colour = Decile), size = 1) + 
+  scale_x_continuous(breaks=seq(2002,2019,4)) +
+  labs(
+    title = "Cash Benefits as proportion of gross income - F/Y 2002-2019 ",
+    subtitle = "",
+    x = "",
+    y = "Percent", 
+    caption = paste0("\nNick Bailey, Urban Big Data Centre.",
+      " Data from ONS 'Effects of Taxes & Benefits' analysis")) 
+
+ggsave(here("Figs", "ETB - cash benefits.png"), height = 10, width = 16, units = "cm", dpi = 300)
+
+
+```
+
+
+## The value of benefits in kind
+
+The first figure also shows the positive impact which benefits in kind have on final incomes, especially for lower income households. We can make this clearer by looking at the value of benefits in kind as a proportion of final incomes. The figure below shows that having public services free at the point of use plays a crucial part in maintaining the living standards of the poorest households. For those in the poorest decile, the proportion of final income from benefits in kind is greater than half. This has held more or less steady since 2001/2, unlike cash benefits. 
+
+```{r benefits in kind, echo=FALSE, warning=FALSE, message = FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+
+etb %>%
+  filter((Component == "Final income" | 
+            Component == "Benefits in kind") & 
+           Group == "All" &
+           Decile != "all") %>% 
+  group_by(Year, Component, Decile) %>%
+  summarise(Amount = sum(Amount, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(Component = str_replace_all(Component, c(" " = "."))) %>%
+  pivot_wider(names_from = Component, values_from = Amount) %>%
+  mutate(Benefits.in.kind.pct = 100 * Benefits.in.kind/Final.income) %>%
+  ggplot(aes(x = Year, y = Benefits.in.kind.pct, group = Decile)) + 
+  geom_line(aes(colour = Decile), size = 1) + 
+  scale_x_continuous(breaks=seq(2002,2019,4)) +
+  labs(
+    title = "'Benefits in kind' as proportion of final income - F/Y 2002-2019 ",
+    subtitle = "",
+    x = "",
+    y = "Percent", 
+    caption = paste0("\nNick Bailey, Urban Big Data Centre.",
+      " Data from ONS 'Effects of Taxes & Benefits' analysis")) 
+
+ggsave(here("Figs", "ETB - benefits in kind.png"), height = 10, width = 16, units = "cm", dpi = 300)
+
+```
+
+The ETB data allow us to drill down into the different sources of benefits in kind. There are, of course, many assumptions behind these, not least that the 'benefit' from a given service is measured by the expenditure on it and that the benefits accrue to the individual rather than wider society. With Education, for example, the benefits flow both to households with children but also to society as a whole through having a better educated, more productive workforce. With Health, there is a benefit from service use (which is presumably the basis for apportioning expenditure) but there is also a benefit from the insurance value of knowing the NHS is there, regardless of whether it is used in a given year. 
+
+Education and health make up the great bulk of the benefits in kinds covered by the ETB data. Both show a greater estimated benefit for lower income deciles, but particularly education, reflecting higher numbers of children in lower income households and the greater use of private schooling by higher income groups. Estimates of social care benefits have been introduced more recently and these have a flatter distribution, with the highest estimated benefit for lower-middle income groups. Other kinds of benefit are much smaller in value. Some (notably subsidies for rail travel) have a very regressive distribution. 
+
+
+```{r benefits in kind by decile, echo=FALSE, warning=FALSE, message = FALSE, fig.height=12, fig.width=12}
+knitr::opts_chunk$set(warning = FALSE)
+
+etb %>%
+  filter(Component == "Benefits in kind" & 
+           Group == "All" &
+           Decile != "all") %>% 
+  ggplot(aes(x = Year, y = Amount, fill = Sub.component)) + 
+  geom_area() + 
+  facet_wrap(~ Decile, ncol = 5) +
+  scale_x_continuous(breaks=seq(2002,2019,4)) +
+  labs(
+    title = "'Benefits in kind' by decile - F/Y 2002-2019 ",
+    subtitle = "",
+    x = "",
+    y = "Amount", 
+    caption = paste0("\nNick Bailey, Urban Big Data Centre.",
+      " Data from ONS 'Effects of Taxes & Benefits' analysis")) +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "bottom")
+
+ggsave(here("Figs", "ETB - benefits in kind detail.png"), height = 16, width = 20, units = "cm", dpi = 300)
+
+```
+
+```{r benefits in kind by decile 2, echo=FALSE, warning=FALSE, message = FALSE, fig.height=6, fig.width=9}
+knitr::opts_chunk$set(warning = FALSE)
+
+etb %>%
+  filter(Component == "Benefits in kind" &
+           # Sub.component != "Education" &
+           # Sub.component != "National Health Service" &
+           Group == "All" &
+           Decile != "all" &
+           Year == "2019") %>%
+  ggplot(aes(x = as.numeric(Decile), y = Amount)) +
+  geom_line(aes(colour = Sub.component), size = 1) +
+  scale_x_continuous(breaks=seq(1,10,1)) +
+  labs(
+    title = "'Benefits in kind' by decile - F/Y 2019 ",
+    subtitle = "",
+    x = "Decile",
+    y = "Amount (£ pa)",
+    caption = paste0("\nNick Bailey, Urban Big Data Centre.",
+      " Data from ONS 'Effects of Taxes & Benefits' analysis")) +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "right")
+
+ggsave(here("Figs", "ETB - benefits in kind detail 2.png"), height = 16, width = 20, units = "cm", dpi = 300)
+
+```
+
+## Summary
+
+The ONS data from the ETB analysis are immensely valuable in enabling us to understand the redistributive impacts not just of taxes and cash benefits, but also of benefits in kind provided largely through public services. ONS's decision to provide these in a machine-friendly format is hugely welcome as it enables quick, efficient analysis by a much wider range of users. It is a move we hope many more Government departments and public bodies will follow. 
+
+One implication of the brief analysis here is to remind us of the necessity of taking into account the value of public services and other non-case transfers when examining the living standards of different groups, especially when making comparisons across countries. For the UK, the figures examined here suggest there has been a something of shift to a more paternalistic system: Government support for lower income groups has moved away from cash benefits and towards non-cash services. This restricts the ability of those on the lowest incomes to direct their resources in ways they find most valuable. It appears to conflict rather with the emphasis the Government placed in the design of the Universal Credit system on individual's taking "responsibility" for their finances (e.g. through payment of rent subsidies to the individual rather than the landlord). 
+
+## Data and code
+Data were taken from the ONS webpage: https://www.ons.gov.uk/peoplepopulationandcommunity/personalandhouseholdfinances/incomeandwealth/datasets/effectsoftaxesandbenefitsonhouseholdincomehistoricalpersonleveldatasets.
+
+The code used to produce this document (R Markdown file) is available from: https://github.com/nick-bailey/Effects-of-taxes-and-benefits.
+
